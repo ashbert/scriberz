@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Watch Transcriber</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Local Watch Audio Transcriber</h1>
+      <p class="subtle">
+        Drag audio files into the area and transcribe them locally with your
+        installed whisper.cpp model.
+      </p>
+
+      <section class="panel">
+        <div id="dropZone" class="drop-zone">
+          <span id="dropText">Drop files here or click to choose</span>
+          <input id="audioInput" type="file" accept="audio/*" multiple />
+        </div>
+
+        <div class="controls">
+          <label>
+            Quality preset
+            <select id="modelSelect">
+              <option value="tiny.en">Tiny – fastest</option>
+              <option value="base.en" selected>Base – balanced</option>
+              <option value="small.en">Small – better quality</option>
+              <option value="medium.en">Medium – high quality</option>
+              <option value="large-v3">Large v3 – best quality</option>
+              <option value="large-v3-turbo">Large v3 Turbo – fast + better quality</option>
+            </select>
+          </label>
+
+          <label>
+            Worker threads
+            <input id="threads" type="number" value="4" min="1" max="32" />
+          </label>
+
+          <label class="toggle-control">
+            <input id="diarizationToggle" type="checkbox" />
+            Enable speaker labels (person1 / person2)
+          </label>
+        </div>
+
+        <button id="transcribeBtn" type="button">Transcribe</button>
+      </section>
+
+      <section id="bootstrapStatus" class="bootstrap-status" aria-live="polite">
+        <p id="status" class="status"></p>
+        <div class="status-row">
+          <span id="statusStage" class="status-stage">Idle</span>
+          <span id="statusTime" class="status-time">00:00</span>
+        </div>
+        <div class="progress-track">
+          <div id="statusBar" class="progress-fill"></div>
+        </div>
+      </section>
+      <section id="results" class="results"></section>
+    </main>
+
+    <template id="resultTemplate">
+      <article class="result">
+        <h3 class="fileName"></h3>
+        <p class="meta"></p>
+        <pre class="transcript"></pre>
+        <div class="actions">
+          <button class="copyBtn">Copy</button>
+          <button class="saveBtn">Save TXT</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
