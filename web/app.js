@@ -1,8 +1,10 @@
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("audioInput");
 const dropText = document.getElementById("dropText");
+const backendSelect = document.getElementById("backendSelect");
 const modelSelect = document.getElementById("modelSelect");
 const threadsInput = document.getElementById("threads");
+const threadsLabel = document.getElementById("threadsLabel");
 const diarizationToggle = document.getElementById("diarizationToggle");
 const transcribeBtn = document.getElementById("transcribeBtn");
 const status = document.getElementById("status");
@@ -11,6 +13,21 @@ const statusTime = document.getElementById("statusTime");
 const statusBar = document.getElementById("statusBar");
 const results = document.getElementById("results");
 const template = document.getElementById("resultTemplate");
+
+const LOCAL_MODELS = [
+  { value: "tiny.en", label: "Tiny \u2013 fastest" },
+  { value: "base.en", label: "Base \u2013 balanced", selected: true },
+  { value: "small.en", label: "Small \u2013 better quality" },
+  { value: "medium.en", label: "Medium \u2013 high quality" },
+  { value: "large-v3", label: "Large v3 \u2013 best quality" },
+  { value: "large-v3-turbo", label: "Large v3 Turbo \u2013 fast + better quality" },
+];
+
+const MODAL_MODELS = [
+  { value: "large-v3-turbo", label: "Large v3 Turbo \u2013 best balance (recommended)", selected: true },
+  { value: "large-v3", label: "Large v3 \u2013 highest quality" },
+  { value: "distil-large-v3", label: "Distil Large v3 \u2013 fastest" },
+];
 
 let selectedFiles = [];
 let bootstrapModel = "";
@@ -197,6 +214,23 @@ function updateDropLabel() {
   dropText.textContent = `${selectedFiles.length} file(s): ${names}${suffix}`;
 }
 
+function isModalBackend() {
+  return backendSelect.value === "modal";
+}
+
+function updateModelOptions() {
+  const models = isModalBackend() ? MODAL_MODELS : LOCAL_MODELS;
+  modelSelect.innerHTML = "";
+  for (const m of models) {
+    const opt = document.createElement("option");
+    opt.value = m.value;
+    opt.textContent = m.label;
+    if (m.selected) opt.selected = true;
+    modelSelect.appendChild(opt);
+  }
+  threadsLabel.style.display = isModalBackend() ? "none" : "";
+}
+
 function clearResults() {
   results.innerHTML = "";
 }
@@ -216,12 +250,16 @@ function renderResult(result) {
 
   title.textContent = result.filename || "unknown";
   if (result.ok) {
-    const metaBits = [`Model: ${result.model}`, `Threads: ${result.threads}`];
+    const metaBits = [`Model: ${result.model}`];
+    if (result.threads) metaBits.push(`Threads: ${result.threads}`);
     if (result.diarization?.requested) {
       const applied = result.diarization?.applied ? "on" : "off";
       metaBits.push(`Speaker labels: ${applied}`);
       if (result.diarization?.speakerCount) {
         metaBits.push(`Speakers detected: ${result.diarization.speakerCount}`);
+      }
+      if (result.diarization?.error) {
+        metaBits.push(`Diarization error: ${result.diarization.error}`);
       }
     }
     meta.textContent = metaBits.join(" • ");
@@ -321,7 +359,25 @@ dropZone.addEventListener("drop", (event) => {
   updateDropLabel();
 });
 
-modelSelect.addEventListener("change", bindBootstrapOnChange);
+backendSelect.addEventListener("change", () => {
+  updateModelOptions();
+  if (isModalBackend()) {
+    clearBootstrapPolling();
+    isWhisperReady = true;
+    transcribeBtn.disabled = false;
+    setProgress(100, "done");
+    statusStage.textContent = "Ready";
+    setStatus("Cloud GPU (Modal) selected. Ready to transcribe.");
+  } else {
+    bindBootstrapOnChange();
+  }
+});
+
+modelSelect.addEventListener("change", () => {
+  if (!isModalBackend()) {
+    bindBootstrapOnChange();
+  }
+});
 
 transcribeBtn.addEventListener("click", async () => {
   if (!selectedFiles.length) {
@@ -329,7 +385,7 @@ transcribeBtn.addEventListener("click", async () => {
     return;
   }
 
-  if (!isWhisperReady || bootstrapModel !== modelSelect.value) {
+  if (!isModalBackend() && (!isWhisperReady || bootstrapModel !== modelSelect.value)) {
     try {
       await bootstrapWhisper();
     } catch (err) {
@@ -340,7 +396,11 @@ transcribeBtn.addEventListener("click", async () => {
 
   transcribeBtn.disabled = true;
   startTranscribeProgress(selectedFiles.length);
-  setStatus(`Transcribing ${selectedFiles.length} file(s)...`);
+  if (isModalBackend()) {
+    setStatus(`Transcribing ${selectedFiles.length} file(s) on cloud GPU... (first run may take 10-30s to warm up)`);
+  } else {
+    setStatus(`Transcribing ${selectedFiles.length} file(s)...`);
+  }
   clearResults();
 
   const form = new FormData();
@@ -348,6 +408,7 @@ transcribeBtn.addEventListener("click", async () => {
     const fileName = file?.name || `audio-${Date.now()}.m4a`;
   form.append("audio", file, fileName);
 }
+  form.append("backend", backendSelect.value);
   form.append("model", modelSelect.value);
   form.append("threads", threadsInput.value || "4");
   form.append("diarization", diarizationToggle.checked ? "1" : "0");
@@ -374,4 +435,6 @@ transcribeBtn.addEventListener("click", async () => {
   }
 });
 
-bootstrapWhisper().catch((err) => setBootstrapState({ message: err.message, stage: "failed", progress: 0, model: modelSelect.value || "base.en" }, true));
+if (!isModalBackend()) {
+  bootstrapWhisper().catch((err) => setBootstrapState({ message: err.message, stage: "failed", progress: 0, model: modelSelect.value || "base.en" }, true));
+}

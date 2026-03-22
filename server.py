@@ -40,6 +40,12 @@ ALLOWED_MODELS = {
     "large-v3-turbo": "large-v3-turbo",
 }
 
+MODAL_MODELS = {
+    "large-v3-turbo": "openai/whisper-large-v3-turbo",
+    "large-v3": "openai/whisper-large-v3",
+    "distil-large-v3": "distil-whisper/distil-large-v3",
+}
+
 BOOTSTRAP_STATUS: Dict[str, object] = {
     "ok": False,
     "running": False,
@@ -293,6 +299,39 @@ def _transcribe_file(
     }
 
 
+def _transcribe_file_modal(
+    audio_path: Path, model: str, diarization: bool = False
+) -> tuple[str, dict]:
+    """Send audio to Modal GPU for transcription. Audio is processed in memory only."""
+    try:
+        import modal
+    except ImportError:
+        raise RuntimeError("Modal is not installed. Run: pip install modal")
+
+    audio_bytes = audio_path.read_bytes()
+    hf_model_id = MODAL_MODELS.get(model, "openai/whisper-large-v3-turbo")
+
+    transcribe_fn = modal.Function.from_name("scriber-gpu", "transcribe")
+    result = transcribe_fn.remote(
+        audio_bytes=audio_bytes, model_id=hf_model_id, diarization=diarization
+    )
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "Modal transcription failed"))
+
+    diar_meta = result.get("diarization", {})
+    meta = {
+        "requested": diarization,
+        "applied": diar_meta.get("applied", False),
+        "speakerMap": diar_meta.get("speakerMap", {}),
+        "speakerCount": diar_meta.get("speakerCount", 0),
+        "segments": diar_meta.get("segments", []),
+    }
+    if diar_meta.get("error"):
+        meta["error"] = diar_meta["error"]
+    return result["transcript"], meta
+
+
 def _prepare_audio(original: Path) -> Path:
     suffix = original.suffix.lower()
     if suffix in SUPPORTED_AUDIO_EXTS:
@@ -452,16 +491,22 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_error_json(400, f"No audio files provided. Form debug: {form_debug}")
                 return
 
+        backend = (form.getfirst("backend", "local") or "local").strip().lower()
         model = form.getfirst("model", DEFAULT_MODEL)
-        if model not in ALLOWED_MODELS:
-            self._send_error_json(400, f"Invalid model '{model}'. Allowed: {', '.join(ALLOWED_MODELS)}")
-            return
 
-        try:
-            _ensure_setup(model)
-        except Exception as err:
-            self._send_error_json(500, str(err))
-            return
+        if backend == "modal":
+            if model not in MODAL_MODELS:
+                self._send_error_json(400, f"Invalid modal model '{model}'. Allowed: {', '.join(MODAL_MODELS)}")
+                return
+        else:
+            if model not in ALLOWED_MODELS:
+                self._send_error_json(400, f"Invalid model '{model}'. Allowed: {', '.join(ALLOWED_MODELS)}")
+                return
+            try:
+                _ensure_setup(model)
+            except Exception as err:
+                self._send_error_json(500, str(err))
+                return
 
         try:
             threads = int(form.getfirst("threads", "4"))
@@ -507,18 +552,22 @@ class Handler(SimpleHTTPRequestHandler):
                     input_path = Path(temp_file.name)
 
                 converted_path = _prepare_audio(input_path)
-                out_prefix = UPLOAD_DIR / f"transcript-{uuid.uuid4().hex}"
-                transcript, diarization_meta = _transcribe_file(converted_path, model, threads, out_prefix, enable_diarization)
-                results.append(
-                    {
-                        "filename": safe_name,
-                        "ok": True,
-                        "model": model,
-                        "threads": threads,
-                        "diarization": diarization_meta,
-                        "transcript": transcript.strip(),
-                    }
-                )
+                if backend == "modal":
+                    transcript, diarization_meta = _transcribe_file_modal(converted_path, model, enable_diarization)
+                    out_prefix = None
+                else:
+                    out_prefix = UPLOAD_DIR / f"transcript-{uuid.uuid4().hex}"
+                    transcript, diarization_meta = _transcribe_file(converted_path, model, threads, out_prefix, enable_diarization)
+                result_entry = {
+                    "filename": safe_name,
+                    "ok": True,
+                    "model": model,
+                    "diarization": diarization_meta,
+                    "transcript": transcript.strip(),
+                }
+                if backend != "modal":
+                    result_entry["threads"] = threads
+                results.append(result_entry)
             except Exception as err:
                 results.append(
                     {

@@ -10,8 +10,8 @@
     <main class="container">
       <h1>Local Watch Audio Transcriber</h1>
       <p class="subtle">
-        Drag audio files into the area and transcribe them locally with your
-        installed whisper.cpp model.
+        Drag audio files into the area and transcribe them with a local or
+        cloud GPU model.
       </p>
 
       <section class="panel">
@@ -21,6 +21,14 @@
         </div>
 
         <div class="controls">
+          <label>
+            Backend
+            <select id="backendSelect">
+              <option value="local">Local (whisper.cpp)</option>
+              <option value="modal">Cloud GPU (Modal)</option>
+            </select>
+          </label>
+
           <label>
             Quality preset
             <select id="modelSelect">
@@ -33,7 +41,7 @@
             </select>
           </label>
 
-          <label>
+          <label id="threadsLabel">
             Worker threads
             <input id="threads" type="number" value="4" min="1" max="32" />
           </label>
