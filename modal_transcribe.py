@@ -129,7 +129,7 @@ def _get_diar_pipeline():
     image=whisper_image,
     gpu="A10G",
     timeout=600,
-    min_containers=1,
+    min_containers=0,
     secrets=[modal.Secret.from_name("huggingface", required_keys=["HF_TOKEN"])],
 )
 def transcribe(
