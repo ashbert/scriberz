@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+DEFAULT_MODEL = "large-v3-turbo"
+MODAL_MODELS = {
+    "large-v3-turbo": "openai/whisper-large-v3-turbo",
+    "large-v3": "openai/whisper-large-v3",
+    "distil-large-v3": "distil-whisper/distil-large-v3",
+}
+
+
+def transcript_path_for(audio_path: Path) -> Path:
+    return audio_path.with_name(f"{audio_path.stem}.transcript.speakers.txt")
+
+
+def transcribe_with_modal(audio_path: Path, model: str = DEFAULT_MODEL) -> str:
+    try:
+        import modal
+    except ImportError as exc:
+        raise RuntimeError("Modal is not installed. Run: pip install modal") from exc
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to convert .m4a audio before Modal upload")
+
+    try:
+        converted = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(audio_path),
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=True,
+            timeout=300,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        detail = f": {stderr}" if stderr else ""
+        raise RuntimeError(f"ffmpeg conversion failed{detail}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffmpeg conversion timed out") from exc
+
+    audio_bytes = converted.stdout
+    if not audio_bytes:
+        raise RuntimeError("ffmpeg conversion produced no audio")
+
+    model_id = MODAL_MODELS.get(model, MODAL_MODELS[DEFAULT_MODEL])
+
+    transcribe_fn = modal.Function.from_name("scriber-gpu", "transcribe")
+    result = transcribe_fn.remote(audio_bytes=audio_bytes, model_id=model_id, diarization=True)
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "Modal transcription failed"))
+
+    transcript = (result.get("transcript") or "").strip()
+    if not transcript:
+        raise RuntimeError("No transcript produced")
+    return transcript
+
+
+def run(source_dir: Path) -> int:
+    if not source_dir.exists() or not source_dir.is_dir():
+        print(f"ERROR: source directory does not exist or is not a directory: {source_dir}", file=sys.stderr)
+        return 2
+
+    audio_files = sorted(p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".m4a")
+    if not audio_files:
+        print(f"No .m4a files found in: {source_dir}")
+        return 0
+
+    created = 0
+    skipped = 0
+    failed = 0
+
+    for audio in audio_files:
+        out_path = transcript_path_for(audio)
+        if out_path.exists():
+            print(f"SKIP  {audio.name} -> {out_path.name} (already exists)")
+            skipped += 1
+            continue
+
+        try:
+            print(f"START {audio.name}")
+            transcript = transcribe_with_modal(audio, model=DEFAULT_MODEL)
+            out_path.write_text(transcript + "\n", encoding="utf-8")
+            print(f"DONE  {audio.name} -> {out_path.name}")
+            created += 1
+        except Exception as exc:  # continue on per-file failures
+            print(f"FAIL  {audio.name}: {exc}", file=sys.stderr)
+            failed += 1
+
+    print("\nSummary")
+    print(f"  created: {created}")
+    print(f"  skipped: {skipped}")
+    print(f"  failed:  {failed}")
+
+    return 1 if failed else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="scriber-cli",
+        description=(
+            "Transcribe .m4a files in a directory using Modal GPU backend with speaker labels on. "
+            "Writes one transcript file per audio next to the source file."
+        ),
+    )
+    parser.add_argument("source_dir", type=Path, help="Directory containing .m4a files")
+    args = parser.parse_args()
+    return run(args.source_dir)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
